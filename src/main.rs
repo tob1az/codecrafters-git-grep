@@ -12,8 +12,13 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
             .chars()
             .all(|c| matches!(c, 'a'..'z') || matches!(c, 'A'..'Z') || c == '_')
     } else if pattern.len() > 2 && pattern.starts_with('[') && pattern.ends_with(']') {
-        let positive_group = &pattern[1..pattern.len() - 1];
-        input_line.chars().any(|c| positive_group.contains(c))
+        if pattern.starts_with("[^") {
+            let negative_group = &pattern[2..pattern.len() - 1];
+            input_line.chars().all(|c| !negative_group.contains(c))      
+        } else  {
+            let positive_group = &pattern[1..pattern.len() - 1];
+            input_line.chars().any(|c| positive_group.contains(c))
+        }
     } else {
         panic!("Unhandled pattern: {}", pattern)
     }
