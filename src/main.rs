@@ -5,6 +5,7 @@ use std::process;
 #[derive(Debug)]
 enum Matcher {
     StartOfLine,
+    EndOfLine,
     WordChar,
     Digit,
     PositiveCharGroup(String),
@@ -19,7 +20,7 @@ impl Matcher {
         }
         let c = string.chars().next().unwrap();
         match self {
-            Self::StartOfLine => Some(0),
+            Self::StartOfLine | Self::EndOfLine => Some(0),
             Self::WordChar => {
                 (matches!(c, 'a'..'z') || matches!(c, 'A'..'Z') || c == '_').then(|| 1)
             }
@@ -36,6 +37,8 @@ impl Matcher {
         }
         if pattern.starts_with("^") {
             Some((Self::StartOfLine, 1))
+        } else if pattern.starts_with("$") {
+            Some((Self::EndOfLine, 1))
         } else if pattern.starts_with("\\d") {
             Some((Self::Digit, 2))
         } else if pattern.starts_with("\\w") {
@@ -61,6 +64,7 @@ impl Matcher {
 struct Expression {
     matchers: Vec<Matcher>,
     start_of_line: bool,
+    end_of_line: bool,
 }
 
 impl Expression {
@@ -87,6 +91,10 @@ impl Expression {
     fn from_start_of_string(&self) -> bool {
         self.start_of_line
     }
+
+    fn till_end_of_string(&self) -> bool {
+        self.end_of_line
+    }
 }
 
 impl TryFrom<&str> for Expression {
@@ -96,11 +104,16 @@ impl TryFrom<&str> for Expression {
         let mut pattern_index = 0;
         let mut matchers = Vec::new();
         let mut start_of_line = false;
+        let mut end_of_line = false;
         while pattern_index < value.len() {
             let remainder = &value[pattern_index..];
             match Matcher::try_parse(remainder) {
                 Some((Matcher::StartOfLine, offset)) => {
                     start_of_line = true;
+                    pattern_index += offset;
+                }
+                Some((Matcher::EndOfLine, offset)) => {
+                    end_of_line = true;
                     pattern_index += offset;
                 }
                 Some((matcher, offset)) => {
@@ -113,6 +126,7 @@ impl TryFrom<&str> for Expression {
         Ok(Self {
             matchers,
             start_of_line,
+            end_of_line,
         })
     }
 }
@@ -125,13 +139,14 @@ fn match_pattern(input_line: &str, expression: &Expression) -> bool {
     while input_index <= input_line.len() - expression.len() {
         let remainder = &input_line[input_index..];
         if expression.match_str(remainder) {
-            println!("match!");
-            return true;
+            return if expression.till_end_of_string() {
+                remainder.len() == expression.len()
+            } else {
+                true
+            };
         } else if expression.from_start_of_string() {
-            println!("start of string!");
             return false;
         } else {
-            println!("next!");
             input_index += 1;
         }
     }
