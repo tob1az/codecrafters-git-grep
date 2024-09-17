@@ -2,54 +2,118 @@ use std::env;
 use std::io;
 use std::process;
 
-fn match_pattern(input_line: &str, pattern: &str) -> bool {
-    let mut pattern_index = 0;
-    for c in input_line.chars() {
-        if pattern_index >= pattern.len() {
-            return true;
+enum Matcher {
+    WordChar,
+    Digit,
+    PositiveCharGroup(String),
+    NegativeCharGroup(String),
+    Literal(char),
+}
+
+impl Matcher {
+    fn match_some(&self, string: &str) -> Option<usize> {
+        if string.is_empty() {
+            return None;
         }
-        let remaining_pattern = &pattern[pattern_index..];
-        if remaining_pattern.starts_with("\\d") {
-            if matches!(c, '0'..'9') {
-                pattern_index += 2;
-            } else {
-                pattern_index = 0;
-            }
-        } else if remaining_pattern.starts_with("\\w") {
-            if matches!(c, 'a'..'z') || matches!(c, 'A'..'Z') || c == '_' {
-                pattern_index += 2;
-            } else {
-                pattern_index = 0;
-            }
-        } else if remaining_pattern.starts_with("[^") {
-            if let Some(end) = remaining_pattern.find(']') {
-                let negative_group = &remaining_pattern[pattern_index + 2..end];
-                if !negative_group.contains(c) {
-                    pattern_index += end + 1;
-                } else {
-                    pattern_index = 0;
-                }
-            } else {
-                pattern_index = 0;
-            }
-        } else if remaining_pattern.starts_with("[") {
-            if let Some(end) = remaining_pattern.find(']') {
-                let positive_group = &remaining_pattern[pattern_index + 1..end];
-                if positive_group.contains(c) {
-                    pattern_index += end + 1;
-                } else {
-                    pattern_index = 0;
-                }
-            }
+        let c = string.chars().next().unwrap();
+        if match self {
+            Self::WordChar => matches!(c, 'a'..'z') || matches!(c, 'A'..'Z') || c == '_',
+            Self::Digit => matches!(c, '0'..'9'),
+            Self::PositiveCharGroup(g) => g.contains(c),
+            Self::NegativeCharGroup(g) => !g.contains(c),
+            Self::Literal(l) => *l == c,
+        } {
+            Some(1)
         } else {
-            if pattern[pattern_index..=pattern_index].contains(c) {
-                pattern_index += 1;
-            } else {
-                pattern_index = 0;
-            }
+            None
         }
     }
-    pattern_index >= pattern.len()
+
+    fn try_parse(pattern: &str) -> Option<(Self, usize)> {
+        if pattern.is_empty() {
+            return None;
+        }
+        if pattern.starts_with("\\d") {
+            Some((Self::Digit, 2))
+        } else if pattern.starts_with("\\w") {
+            Some((Self::WordChar, 2))
+        } else if pattern.starts_with("[^") {
+            if let Some(end) = pattern.find(']') {
+                Some((Self::NegativeCharGroup(pattern[2..end].to_owned()), end + 1))
+            } else {
+                None
+            }
+        } else if pattern.starts_with("[") {
+            if let Some(end) = pattern.find(']') {
+                Some((Self::PositiveCharGroup(pattern[1..end].to_owned()), end + 1))
+            } else {
+                None
+            }
+        } else {
+            Some((Self::Literal(pattern.chars().next().unwrap()), 1))
+        }
+    }
+}
+
+struct Expression {
+    matchers: Vec<Matcher>,
+}
+
+impl Expression {
+    fn match_str(&self, input: &str) -> bool {
+        let mut offset = 0;
+        for m in &self.matchers {
+            if offset >= input.len() {
+                return false;
+            }
+            let remaining_input = &input[offset..];
+            if let Some(shift) = m.match_some(remaining_input) {
+                offset += shift;
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn len(&self) -> usize {
+        self.matchers.len()
+    }
+}
+
+impl TryFrom<&str> for Expression {
+    type Error = ();
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let mut pattern_index = 0;
+        let mut matchers = Vec::new();
+        while pattern_index < value.len() {
+            let remainder = &value[pattern_index..];
+            if let Some((matcher, offset)) = Matcher::try_parse(remainder) {
+                matchers.push(matcher);
+                pattern_index += offset;
+            } else {
+                return Err(());
+            }
+        }
+        Ok(Self { matchers })
+    }
+}
+
+fn match_pattern(input_line: &str, expression: &Expression) -> bool {
+    if input_line.len() < expression.len() {
+        return false;
+    }
+    let mut input_index = 0;
+    while input_index <= input_line.len() - expression.len() {
+        let remainder = &input_line[input_index..];
+        if expression.match_str(remainder) {
+            return true;
+        } else {
+            input_index += 1;
+        }
+    }
+    false
 }
 
 // Usage: echo <input_text> | your_program.sh -E <pattern>
@@ -67,8 +131,12 @@ fn main() {
 
     io::stdin().read_line(&mut input_line).unwrap();
 
-    if match_pattern(&input_line, &pattern) {
-        process::exit(0)
+    if let Ok(expression) = Expression::try_from(pattern.as_ref()) {
+        if match_pattern(&input_line, &expression) {
+            process::exit(0)
+        } else {
+            process::exit(1)
+        }
     } else {
         process::exit(1)
     }
