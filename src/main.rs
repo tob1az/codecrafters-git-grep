@@ -2,7 +2,9 @@ use std::env;
 use std::io;
 use std::process;
 
+#[derive(Debug)]
 enum Matcher {
+    StartOfLine,
     WordChar,
     Digit,
     PositiveCharGroup(String),
@@ -16,16 +18,15 @@ impl Matcher {
             return None;
         }
         let c = string.chars().next().unwrap();
-        if match self {
-            Self::WordChar => matches!(c, 'a'..'z') || matches!(c, 'A'..'Z') || c == '_',
-            Self::Digit => matches!(c, '0'..'9'),
-            Self::PositiveCharGroup(g) => g.contains(c),
-            Self::NegativeCharGroup(g) => !g.contains(c),
-            Self::Literal(l) => *l == c,
-        } {
-            Some(1)
-        } else {
-            None
+        match self {
+            Self::StartOfLine => Some(0),
+            Self::WordChar => {
+                (matches!(c, 'a'..'z') || matches!(c, 'A'..'Z') || c == '_').then(|| 1)
+            }
+            Self::Digit => matches!(c, '0'..'9').then(|| 1),
+            Self::PositiveCharGroup(g) => g.contains(c).then(|| 1),
+            Self::NegativeCharGroup(g) => (!g.contains(c)).then(|| 1),
+            Self::Literal(l) => (*l == c).then(|| 1),
         }
     }
 
@@ -33,7 +34,9 @@ impl Matcher {
         if pattern.is_empty() {
             return None;
         }
-        if pattern.starts_with("\\d") {
+        if pattern.starts_with("^") {
+            Some((Self::StartOfLine, 1))
+        } else if pattern.starts_with("\\d") {
             Some((Self::Digit, 2))
         } else if pattern.starts_with("\\w") {
             Some((Self::WordChar, 2))
@@ -57,6 +60,7 @@ impl Matcher {
 
 struct Expression {
     matchers: Vec<Matcher>,
+    start_of_line: bool,
 }
 
 impl Expression {
@@ -79,6 +83,10 @@ impl Expression {
     fn len(&self) -> usize {
         self.matchers.len()
     }
+
+    fn from_start_of_string(&self) -> bool {
+        self.start_of_line
+    }
 }
 
 impl TryFrom<&str> for Expression {
@@ -87,16 +95,25 @@ impl TryFrom<&str> for Expression {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let mut pattern_index = 0;
         let mut matchers = Vec::new();
+        let mut start_of_line = false;
         while pattern_index < value.len() {
             let remainder = &value[pattern_index..];
-            if let Some((matcher, offset)) = Matcher::try_parse(remainder) {
-                matchers.push(matcher);
-                pattern_index += offset;
-            } else {
-                return Err(());
+            match Matcher::try_parse(remainder) {
+                Some((Matcher::StartOfLine, offset)) => {
+                    start_of_line = true;
+                    pattern_index += offset;
+                }
+                Some((matcher, offset)) => {
+                    matchers.push(matcher);
+                    pattern_index += offset;
+                }
+                None => return Err(()),
             }
         }
-        Ok(Self { matchers })
+        Ok(Self {
+            matchers,
+            start_of_line,
+        })
     }
 }
 
@@ -108,8 +125,13 @@ fn match_pattern(input_line: &str, expression: &Expression) -> bool {
     while input_index <= input_line.len() - expression.len() {
         let remainder = &input_line[input_index..];
         if expression.match_str(remainder) {
+            println!("match!");
             return true;
+        } else if expression.from_start_of_string() {
+            println!("start of string!");
+            return false;
         } else {
+            println!("next!");
             input_index += 1;
         }
     }
