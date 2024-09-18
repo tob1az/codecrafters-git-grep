@@ -49,29 +49,17 @@ impl Matcher {
         } else if pattern.starts_with("\\w") {
             Some((Self::WordChar, 2))
         } else if pattern.starts_with("[^") {
-            if let Some(end) = pattern.find(']') {
-                Some((Self::NegativeCharGroup(pattern[2..end].to_owned()), end + 1))
-            } else {
-                None
-            }
+            pattern
+                .find(']')
+                .map(|end| (Self::NegativeCharGroup(pattern[2..end].to_owned()), end + 1))
         } else if pattern.starts_with("[") {
-            if let Some(end) = pattern.find(']') {
-                Some((Self::PositiveCharGroup(pattern[1..end].to_owned()), end + 1))
-            } else {
-                None
-            }
+            pattern
+                .find(']')
+                .map(|end| (Self::PositiveCharGroup(pattern[1..end].to_owned()), end + 1))
         } else if pattern.starts_with("+") {
-            if !previous.is_empty() {
-                Some((Self::OneOrMore(previous.to_vec()), 1))
-            } else {
-                None
-            }
+            (!previous.is_empty()).then(|| (Self::OneOrMore(previous.to_vec()), 1))
         } else if pattern.starts_with("?") {
-            if !previous.is_empty() {
-                Some((Self::ZeroOrOne(previous.to_vec()), 1))
-            } else {
-                None
-            }
+            (!previous.is_empty()).then(|| (Self::ZeroOrOne(previous.to_vec()), 1))
         } else {
             Some((Self::Literal(pattern.chars().next().unwrap()), 1))
         }
