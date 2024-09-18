@@ -25,9 +25,9 @@ impl Matcher {
         match self {
             Self::StartOfLine | Self::EndOfLine => Some(0),
             Self::WordChar => {
-                (matches!(c, 'a'..'z') || matches!(c, 'A'..'Z') || c == '_').then_some(1)
+                (matches!(c, 'a'..='z') || matches!(c, 'A'..='Z') || c == '_').then_some(1)
             }
-            Self::Digit => matches!(c, '0'..'9').then_some(1),
+            Self::Digit => matches!(c, '0'..='9').then_some(1),
             Self::PositiveCharGroup(g) => g.contains(c).then_some(1),
             Self::NegativeCharGroup(g) => (!g.contains(c)).then_some(1),
             Self::Literal(l) => (*l == c).then_some(1),
