@@ -13,6 +13,7 @@ enum Matcher {
     NegativeCharGroup(String),
     Literal(char),
     OneOrMore(Vec<Matcher>),
+    ZeroOrOne(Vec<Matcher>),
 }
 
 impl Matcher {
@@ -30,7 +31,8 @@ impl Matcher {
             Self::PositiveCharGroup(g) => g.contains(c).then_some(1),
             Self::NegativeCharGroup(g) => (!g.contains(c)).then_some(1),
             Self::Literal(l) => (*l == c).then_some(1),
-            Self::OneOrMore(group) => Self::match_sequence(group, string),
+            Self::OneOrMore(group) => Self::match_sequence(group, string, usize::MAX),
+            Self::ZeroOrOne(group) => Self::match_sequence(group, string, 1).or(Some(0)),
         }
     }
 
@@ -64,14 +66,20 @@ impl Matcher {
             } else {
                 None
             }
+        } else if pattern.starts_with("?") {
+            if !previous.is_empty() {
+                Some((Self::ZeroOrOne(previous.to_vec()), 1))
+            } else {
+                None
+            }
         } else {
             Some((Self::Literal(pattern.chars().next().unwrap()), 1))
         }
     }
 
-    fn match_sequence(matchers: &[Matcher], string: &str) -> Option<usize> {
+    fn match_sequence(matchers: &[Matcher], string: &str, max_instances: usize) -> Option<usize> {
         let mut match_count = 0;
-        'exit: loop {
+        'exit: for _ in 0..max_instances {
             let mut increment = 0;
             for m in matchers {
                 let remainder = &string[match_count + increment..];
@@ -154,9 +162,11 @@ impl TryFrom<&str> for Expression {
                     end_of_line = true;
                     pattern_index += offset;
                 }
-                Some((matcher @ Matcher::OneOrMore(_), offset)) => {
+                Some((matcher @ Matcher::OneOrMore(_), offset))
+                | Some((matcher @ Matcher::ZeroOrOne(_), offset)) => {
                     // TODO: support group
                     // TODO: pass previous as &mut to avoid copies
+                    min_length -= 1;
                     matchers.pop();
                     matchers.push(matcher);
                     pattern_index += offset;
