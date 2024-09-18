@@ -14,6 +14,7 @@ enum Matcher {
     Literal(char),
     OneOrMore(Vec<Matcher>),
     ZeroOrOne(Vec<Matcher>),
+    Wildcard,
 }
 
 impl Matcher {
@@ -33,6 +34,7 @@ impl Matcher {
             Self::Literal(l) => (*l == c).then_some(1),
             Self::OneOrMore(group) => Self::match_sequence(group, string, usize::MAX),
             Self::ZeroOrOne(group) => Self::match_sequence(group, string, 1).or(Some(0)),
+            Self::Wildcard => Some(1),
         }
     }
 
@@ -60,6 +62,8 @@ impl Matcher {
             (!previous.is_empty()).then(|| (Self::OneOrMore(previous.to_vec()), 1))
         } else if pattern.starts_with("?") {
             (!previous.is_empty()).then(|| (Self::ZeroOrOne(previous.to_vec()), 1))
+        } else if pattern.starts_with(".") {
+            Some((Self::Wildcard, 1))
         } else {
             Some((Self::Literal(pattern.chars().next().unwrap()), 1))
         }
