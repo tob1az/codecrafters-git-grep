@@ -2,15 +2,17 @@ use std::env;
 use std::io;
 use std::process;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Matcher {
     StartOfLine,
     EndOfLine,
     WordChar,
     Digit,
+    // TODO: &str
     PositiveCharGroup(String),
     NegativeCharGroup(String),
     Literal(char),
+    OneOrMore(Vec<Matcher>),
 }
 
 impl Matcher {
@@ -22,16 +24,17 @@ impl Matcher {
         match self {
             Self::StartOfLine | Self::EndOfLine => Some(0),
             Self::WordChar => {
-                (matches!(c, 'a'..'z') || matches!(c, 'A'..'Z') || c == '_').then(|| 1)
+                (matches!(c, 'a'..'z') || matches!(c, 'A'..'Z') || c == '_').then_some(1)
             }
-            Self::Digit => matches!(c, '0'..'9').then(|| 1),
-            Self::PositiveCharGroup(g) => g.contains(c).then(|| 1),
-            Self::NegativeCharGroup(g) => (!g.contains(c)).then(|| 1),
-            Self::Literal(l) => (*l == c).then(|| 1),
+            Self::Digit => matches!(c, '0'..'9').then_some(1),
+            Self::PositiveCharGroup(g) => g.contains(c).then_some(1),
+            Self::NegativeCharGroup(g) => (!g.contains(c)).then_some(1),
+            Self::Literal(l) => (*l == c).then_some(1),
+            Self::OneOrMore(group) => Self::match_sequence(group, string),
         }
     }
 
-    fn try_parse(pattern: &str) -> Option<(Self, usize)> {
+    fn try_parse(pattern: &str, previous: &[Matcher]) -> Option<(Self, usize)> {
         if pattern.is_empty() {
             return None;
         }
@@ -55,8 +58,35 @@ impl Matcher {
             } else {
                 None
             }
+        } else if pattern.starts_with("+") {
+            if !previous.is_empty() {
+                Some((Self::OneOrMore(previous.to_vec()), 1))
+            } else {
+                None
+            }
         } else {
             Some((Self::Literal(pattern.chars().next().unwrap()), 1))
+        }
+    }
+
+    fn match_sequence(matchers: &[Matcher], string: &str) -> Option<usize> {
+        let mut match_count = 0;
+        'exit: loop {
+            let mut increment = 0;
+            for m in matchers {
+                let remainder = &string[match_count + increment..];
+                if let Some(parsed) = m.match_some(remainder) {
+                    increment += parsed;
+                } else {
+                    break 'exit;
+                }
+            }
+            match_count += increment;
+        }
+        if match_count > 0 {
+            Some(match_count)
+        } else {
+            None
         }
     }
 }
@@ -65,6 +95,7 @@ struct Expression {
     matchers: Vec<Matcher>,
     start_of_line: bool,
     end_of_line: bool,
+    min_length: usize,
 }
 
 impl Expression {
@@ -84,8 +115,8 @@ impl Expression {
         true
     }
 
-    fn len(&self) -> usize {
-        self.matchers.len()
+    fn min_len(&self) -> usize {
+        self.min_length
     }
 
     fn from_start_of_string(&self) -> bool {
@@ -105,9 +136,16 @@ impl TryFrom<&str> for Expression {
         let mut matchers = Vec::new();
         let mut start_of_line = false;
         let mut end_of_line = false;
+        let mut min_length = 0;
         while pattern_index < value.len() {
             let remainder = &value[pattern_index..];
-            match Matcher::try_parse(remainder) {
+            let previous = if matchers.is_empty() {
+                &[]
+            } else {
+                let last = matchers.len() - 1;
+                &matchers[last..=last]
+            };
+            match Matcher::try_parse(remainder, previous) {
                 Some((Matcher::StartOfLine, offset)) => {
                     start_of_line = true;
                     pattern_index += offset;
@@ -116,7 +154,15 @@ impl TryFrom<&str> for Expression {
                     end_of_line = true;
                     pattern_index += offset;
                 }
+                Some((matcher @ Matcher::OneOrMore(_), offset)) => {
+                    // TODO: support group
+                    // TODO: pass previous as &mut to avoid copies
+                    matchers.pop();
+                    matchers.push(matcher);
+                    pattern_index += offset;
+                }
                 Some((matcher, offset)) => {
+                    min_length += 1;
                     matchers.push(matcher);
                     pattern_index += offset;
                 }
@@ -127,20 +173,21 @@ impl TryFrom<&str> for Expression {
             matchers,
             start_of_line,
             end_of_line,
+            min_length,
         })
     }
 }
 
 fn match_pattern(input_line: &str, expression: &Expression) -> bool {
-    if input_line.len() < expression.len() {
+    if input_line.len() < expression.min_len() {
         return false;
     }
     let mut input_index = 0;
-    while input_index <= input_line.len() - expression.len() {
+    while input_index <= input_line.len() - expression.min_len() {
         let remainder = &input_line[input_index..];
         if expression.match_str(remainder) {
             return if expression.till_end_of_string() {
-                remainder.len() == expression.len()
+                remainder.len() == expression.min_len()
             } else {
                 true
             };
