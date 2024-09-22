@@ -15,6 +15,10 @@ enum Matcher {
     OneOrMore(Vec<Matcher>),
     ZeroOrOne(Vec<Matcher>),
     Wildcard,
+    GroupStart,
+    GroupEnd,
+    Alteration,
+    Group(Vec<Matcher>, Vec<Matcher>),
 }
 
 impl Matcher {
@@ -24,7 +28,11 @@ impl Matcher {
         }
         let c = string.chars().next().unwrap();
         match self {
-            Self::StartOfLine | Self::EndOfLine => Some(0),
+            Self::StartOfLine
+            | Self::EndOfLine
+            | Self::GroupStart
+            | Self::GroupEnd
+            | Self::Alteration => Some(0),
             Self::WordChar => {
                 (matches!(c, 'a'..='z') || matches!(c, 'A'..='Z') || c == '_').then_some(1)
             }
@@ -35,6 +43,9 @@ impl Matcher {
             Self::OneOrMore(group) => Self::match_sequence(group, string, usize::MAX),
             Self::ZeroOrOne(group) => Self::match_sequence(group, string, 1).or(Some(0)),
             Self::Wildcard => Some(1),
+            Self::Group(left, right) => {
+                Self::match_group(left, string).or_else(|| Self::match_group(right, string))
+            }
         }
     }
 
@@ -64,6 +75,12 @@ impl Matcher {
             (!previous.is_empty()).then(|| (Self::ZeroOrOne(previous.to_vec()), 1))
         } else if pattern.starts_with(".") {
             Some((Self::Wildcard, 1))
+        } else if pattern.starts_with("(") {
+            Some((Self::GroupStart, 1))
+        } else if pattern.starts_with(")") {
+            Some((Self::GroupEnd, 1))
+        } else if pattern.starts_with("|") {
+            Some((Self::Alteration, 1))
         } else {
             Some((Self::Literal(pattern.chars().next().unwrap()), 1))
         }
@@ -89,13 +106,21 @@ impl Matcher {
             None
         }
     }
+
+    fn match_group(matchers: &[Matcher], string: &str) -> Option<usize> {
+        let mut match_len = 0;
+        for m in matchers {
+            let remainder = &string[match_len..];
+            match_len += m.match_some(remainder)?;
+        }
+        Some(match_len)
+    }
 }
 
 struct Expression {
     matchers: Vec<Matcher>,
     start_of_line: bool,
     end_of_line: bool,
-    min_length: usize,
 }
 
 impl Expression {
@@ -112,11 +137,11 @@ impl Expression {
                 return false;
             }
         }
-        true
-    }
-
-    fn min_len(&self) -> usize {
-        self.min_length
+        if self.till_end_of_string() {
+            offset >= input.len()
+        } else {
+            true
+        }
     }
 
     fn from_start_of_string(&self) -> bool {
@@ -128,15 +153,20 @@ impl Expression {
     }
 }
 
+struct Group {
+    start_index: usize,
+    alternative_index: Option<usize>,
+}
+
 impl TryFrom<&str> for Expression {
-    type Error = ();
+    type Error = String;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let mut pattern_index = 0;
         let mut matchers = Vec::new();
         let mut start_of_line = false;
         let mut end_of_line = false;
-        let mut min_length = 0;
+        let mut groups = Vec::new();
         while pattern_index < value.len() {
             let remainder = &value[pattern_index..];
             let previous = if matchers.is_empty() {
@@ -154,45 +184,69 @@ impl TryFrom<&str> for Expression {
                     end_of_line = true;
                     pattern_index += offset;
                 }
+                Some((Matcher::GroupStart, offset)) => {
+                    groups.push(Group {
+                        start_index: matchers.len(),
+                        alternative_index: None,
+                    });
+                    pattern_index += offset;
+                }
+                Some((Matcher::Alteration, offset)) => {
+                    let group = groups
+                        .last_mut()
+                        .ok_or("Alteration not in group".to_owned())?;
+
+                    if group.alternative_index.is_some() {
+                        return Err("Double alteration in group".into());
+                    }
+                    group.alternative_index = Some(matchers.len());
+                    pattern_index += offset;
+                }
+                Some((Matcher::GroupEnd, offset)) => {
+                    let group = groups.pop().ok_or("Stray )".to_owned())?;
+                    let alternative_index =
+                        group.alternative_index.unwrap_or_else(|| matchers.len());
+                    let right = matchers.split_off(alternative_index);
+                    let left = matchers.split_off(group.start_index);
+                    matchers.push(Matcher::Group(left, right));
+                    pattern_index += offset;
+                }
                 Some((matcher @ Matcher::OneOrMore(_), offset))
                 | Some((matcher @ Matcher::ZeroOrOne(_), offset)) => {
                     // TODO: support group
                     // TODO: pass previous as &mut to avoid copies
-                    min_length -= 1;
                     matchers.pop();
                     matchers.push(matcher);
                     pattern_index += offset;
                 }
                 Some((matcher, offset)) => {
-                    min_length += 1;
                     matchers.push(matcher);
                     pattern_index += offset;
                 }
-                None => return Err(()),
+                None => return Err("Failed to parse a matcher".into()),
             }
         }
-        Ok(Self {
-            matchers,
-            start_of_line,
-            end_of_line,
-            min_length,
-        })
+        if !groups.is_empty() {
+            Err("Unclosed group".into())
+        } else {
+            Ok(Self {
+                matchers,
+                start_of_line,
+                end_of_line,
+            })
+        }
     }
 }
 
 fn match_pattern(input_line: &str, expression: &Expression) -> bool {
-    if input_line.len() < expression.min_len() {
+    if input_line.is_empty() {
         return false;
     }
     let mut input_index = 0;
-    while input_index <= input_line.len() - expression.min_len() {
+    while input_index < input_line.len() {
         let remainder = &input_line[input_index..];
         if expression.match_str(remainder) {
-            return if expression.till_end_of_string() {
-                remainder.len() == expression.min_len()
-            } else {
-                true
-            };
+            return true;
         } else if expression.from_start_of_string() {
             return false;
         } else {
@@ -217,13 +271,17 @@ fn main() {
 
     io::stdin().read_line(&mut input_line).unwrap();
 
-    if let Ok(expression) = Expression::try_from(pattern.as_ref()) {
-        if match_pattern(&input_line, &expression) {
-            process::exit(0)
-        } else {
+    match Expression::try_from(pattern.as_ref()) {
+        Ok(expression) => {
+            if match_pattern(&input_line, &expression) {
+                process::exit(0)
+            } else {
+                process::exit(1)
+            }
+        }
+        Err(error) => {
+            eprintln!("Error: {error}");
             process::exit(1)
         }
-    } else {
-        process::exit(1)
     }
 }
