@@ -12,8 +12,8 @@ enum Matcher {
     PositiveCharGroup(String),
     NegativeCharGroup(String),
     Literal(char),
-    OneOrMore(Vec<Matcher>),
-    ZeroOrOne(Vec<Matcher>),
+    OneOrMore(Box<Matcher>),
+    ZeroOrOne(Box<Matcher>),
     Wildcard,
     GroupStart,
     GroupEnd,
@@ -23,10 +23,7 @@ enum Matcher {
 
 impl Matcher {
     fn match_some(&self, string: &str) -> Option<usize> {
-        if string.is_empty() {
-            return None;
-        }
-        let c = string.chars().next().unwrap();
+        let c = string.chars().next()?;
         match self {
             Self::StartOfLine
             | Self::EndOfLine
@@ -40,8 +37,8 @@ impl Matcher {
             Self::PositiveCharGroup(g) => g.contains(c).then_some(1),
             Self::NegativeCharGroup(g) => (!g.contains(c)).then_some(1),
             Self::Literal(l) => (*l == c).then_some(1),
-            Self::OneOrMore(group) => Self::match_sequence(group, string, usize::MAX),
-            Self::ZeroOrOne(group) => Self::match_sequence(group, string, 1).or(Some(0)),
+            Self::OneOrMore(matcher) => Self::match_sequence(matcher, string),
+            Self::ZeroOrOne(matcher) => matcher.match_some(string).or(Some(0)),
             Self::Wildcard => Some(1),
             Self::Group(left, right) => {
                 Self::match_group(left, string).or_else(|| Self::match_group(right, string))
@@ -49,10 +46,7 @@ impl Matcher {
         }
     }
 
-    fn try_parse(pattern: &str, previous: &[Matcher]) -> Option<(Self, usize)> {
-        if pattern.is_empty() {
-            return None;
-        }
+    fn try_parse(pattern: &str, previous: Option<&Matcher>) -> Option<(Self, usize)> {
         if pattern.starts_with("^") {
             Some((Self::StartOfLine, 1))
         } else if pattern.starts_with("$") {
@@ -70,9 +64,9 @@ impl Matcher {
                 .find(']')
                 .map(|end| (Self::PositiveCharGroup(pattern[1..end].to_owned()), end + 1))
         } else if pattern.starts_with("+") {
-            (!previous.is_empty()).then(|| (Self::OneOrMore(previous.to_vec()), 1))
+            Some((Self::OneOrMore(Box::new(previous?.clone())), 1))
         } else if pattern.starts_with("?") {
-            (!previous.is_empty()).then(|| (Self::ZeroOrOne(previous.to_vec()), 1))
+            Some((Self::ZeroOrOne(Box::new(previous?.clone())), 1))
         } else if pattern.starts_with(".") {
             Some((Self::Wildcard, 1))
         } else if pattern.starts_with("(") {
@@ -82,24 +76,21 @@ impl Matcher {
         } else if pattern.starts_with("|") {
             Some((Self::Alteration, 1))
         } else {
-            Some((Self::Literal(pattern.chars().next().unwrap()), 1))
+            Some((Self::Literal(pattern.chars().next()?), 1))
         }
     }
 
-    fn match_sequence(matchers: &[Matcher], string: &str, max_instances: usize) -> Option<usize> {
+    fn match_sequence(matcher: &Matcher, string: &str) -> Option<usize> {
         let mut match_count = 0;
-        'exit: for _ in 0..max_instances {
-            let mut increment = 0;
-            for m in matchers {
-                let remainder = &string[match_count + increment..];
-                if let Some(parsed) = m.match_some(remainder) {
-                    increment += parsed;
-                } else {
-                    break 'exit;
-                }
+        loop {
+            let remainder = &string[match_count..];
+            if let Some(matched) = matcher.match_some(remainder) {
+                match_count += matched;
+            } else {
+                break;
             }
-            match_count += increment;
         }
+
         if match_count > 0 {
             Some(match_count)
         } else {
@@ -108,6 +99,9 @@ impl Matcher {
     }
 
     fn match_group(matchers: &[Matcher], string: &str) -> Option<usize> {
+        if matchers.is_empty() {
+            return None;
+        }
         let mut match_len = 0;
         for m in matchers {
             let remainder = &string[match_len..];
@@ -169,13 +163,7 @@ impl TryFrom<&str> for Expression {
         let mut groups = Vec::new();
         while pattern_index < value.len() {
             let remainder = &value[pattern_index..];
-            let previous = if matchers.is_empty() {
-                &[]
-            } else {
-                let last = matchers.len() - 1;
-                &matchers[last..=last]
-            };
-            match Matcher::try_parse(remainder, previous) {
+            match Matcher::try_parse(remainder, matchers.last()) {
                 Some((Matcher::StartOfLine, offset)) => {
                     start_of_line = true;
                     pattern_index += offset;
