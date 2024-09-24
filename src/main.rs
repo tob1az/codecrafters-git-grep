@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::env;
 use std::io;
 use std::process;
@@ -19,10 +20,15 @@ enum Matcher {
     GroupEnd,
     Alteration,
     Group(Vec<Matcher>, Vec<Matcher>),
+    Backreference(usize),
 }
 
 impl Matcher {
-    fn match_some(&self, string: &str) -> Option<usize> {
+    fn match_some<'a>(
+        &self,
+        string: &'a str,
+        matched_groups: &RefCell<Vec<&'a str>>,
+    ) -> Option<usize> {
         let c = string.chars().next()?;
         match self {
             Self::StartOfLine
@@ -37,12 +43,14 @@ impl Matcher {
             Self::PositiveCharGroup(g) => g.contains(c).then_some(1),
             Self::NegativeCharGroup(g) => (!g.contains(c)).then_some(1),
             Self::Literal(l) => (*l == c).then_some(1),
-            Self::OneOrMore(matcher) => Self::match_sequence(matcher, string),
-            Self::ZeroOrOne(matcher) => matcher.match_some(string).or(Some(0)),
+            Self::OneOrMore(matcher) => Self::match_sequence(matcher, string, matched_groups),
+            Self::ZeroOrOne(matcher) => matcher.match_some(string, matched_groups).or(Some(0)),
             Self::Wildcard => Some(1),
-            Self::Group(left, right) => {
-                Self::match_group(left, string).or_else(|| Self::match_group(right, string))
-            }
+            Self::Group(left, right) => Self::match_group(left, string, matched_groups)
+                .or_else(|| Self::match_group(right, string, matched_groups)),
+            Self::Backreference(n) => string
+                .starts_with(matched_groups.borrow()[*n - 1])
+                .then(|| matched_groups.borrow()[*n - 1].len()),
         }
     }
 
@@ -75,16 +83,22 @@ impl Matcher {
             Some((Self::GroupEnd, 1))
         } else if pattern.starts_with("|") {
             Some((Self::Alteration, 1))
+        } else if pattern.starts_with("\\1") {
+            Some((Self::Backreference(1), 2))
         } else {
             Some((Self::Literal(pattern.chars().next()?), 1))
         }
     }
 
-    fn match_sequence(matcher: &Matcher, string: &str) -> Option<usize> {
+    fn match_sequence<'a>(
+        matcher: &Matcher,
+        string: &'a str,
+        matched_groups: &RefCell<Vec<&'a str>>,
+    ) -> Option<usize> {
         let mut match_count = 0;
         loop {
             let remainder = &string[match_count..];
-            if let Some(matched) = matcher.match_some(remainder) {
+            if let Some(matched) = matcher.match_some(remainder, matched_groups) {
                 match_count += matched;
             } else {
                 break;
@@ -98,15 +112,20 @@ impl Matcher {
         }
     }
 
-    fn match_group(matchers: &[Matcher], string: &str) -> Option<usize> {
+    fn match_group<'a>(
+        matchers: &[Matcher],
+        string: &'a str,
+        matched_groups: &RefCell<Vec<&'a str>>,
+    ) -> Option<usize> {
         if matchers.is_empty() {
             return None;
         }
         let mut match_len = 0;
         for m in matchers {
             let remainder = &string[match_len..];
-            match_len += m.match_some(remainder)?;
+            match_len += m.match_some(remainder, matched_groups)?;
         }
+        matched_groups.borrow_mut().push(&string[0..match_len]);
         Some(match_len)
     }
 }
@@ -120,12 +139,13 @@ struct Expression {
 impl Expression {
     fn match_str(&self, input: &str) -> bool {
         let mut offset = 0;
+        let mut matched_groups = RefCell::new(Vec::new());
         for m in &self.matchers {
             if offset >= input.len() {
                 return false;
             }
             let remaining_input = &input[offset..];
-            if let Some(shift) = m.match_some(remaining_input) {
+            if let Some(shift) = m.match_some(remaining_input, &mut matched_groups) {
                 offset += shift;
             } else {
                 return false;
@@ -201,9 +221,20 @@ impl TryFrom<&str> for Expression {
                 }
                 Some((matcher @ Matcher::OneOrMore(_), offset))
                 | Some((matcher @ Matcher::ZeroOrOne(_), offset)) => {
-                    // TODO: support group
                     // TODO: pass previous as &mut to avoid copies
                     matchers.pop();
+                    matchers.push(matcher);
+                    pattern_index += offset;
+                }
+                Some((matcher @ Matcher::Backreference(n), offset)) => {
+                    if matchers
+                        .iter()
+                        .filter(|m| matches!(m, Matcher::Group(_, _)))
+                        .count()
+                        < n
+                    {
+                        return Err("Invalid back reference".into());
+                    }
                     matchers.push(matcher);
                     pattern_index += offset;
                 }
