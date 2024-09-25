@@ -54,6 +54,22 @@ impl Matcher {
         }
     }
 
+    fn parse_backreference(pattern: &str) -> Option<(usize, usize)> {
+        if !pattern.starts_with("\\") {
+            return None;
+        }
+        let number_size = pattern
+            .chars()
+            .skip(1)
+            .take_while(|c| c.is_numeric())
+            .count();
+        if number_size == 0 {
+            return None;
+        }
+        let number = pattern[1..=number_size].parse().ok()?;
+        Some((number, number_size + 1))
+    }
+
     fn try_parse(pattern: &str, previous: Option<&Matcher>) -> Option<(Self, usize)> {
         if pattern.starts_with("^") {
             Some((Self::StartOfLine, 1))
@@ -63,6 +79,8 @@ impl Matcher {
             Some((Self::Digit, 2))
         } else if pattern.starts_with("\\w") {
             Some((Self::WordChar, 2))
+        } else if let Some((number, length)) = Self::parse_backreference(pattern) {
+            Some((Self::Backreference(number), length))
         } else if pattern.starts_with("[^") {
             pattern
                 .find(']')
@@ -83,8 +101,6 @@ impl Matcher {
             Some((Self::GroupEnd, 1))
         } else if pattern.starts_with("|") {
             Some((Self::Alteration, 1))
-        } else if pattern.starts_with("\\1") {
-            Some((Self::Backreference(1), 2))
         } else {
             Some((Self::Literal(pattern.chars().next()?), 1))
         }
