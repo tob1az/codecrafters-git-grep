@@ -136,12 +136,18 @@ impl Matcher {
         if matchers.is_empty() {
             return None;
         }
+        // start group
+        let group_index = matched_groups.borrow().len();
+        matched_groups.borrow_mut().push("");
         let mut match_len = 0;
         for m in matchers {
             let remainder = &string[match_len..];
             match_len += m.match_some(remainder, matched_groups)?;
         }
-        matched_groups.borrow_mut().push(&string[0..match_len]);
+        *matched_groups
+            .borrow_mut()
+            .get_mut(group_index)
+            .expect("there should be a matched group") = &string[0..match_len];
         Some(match_len)
     }
 }
@@ -197,6 +203,7 @@ impl TryFrom<&str> for Expression {
         let mut start_of_line = false;
         let mut end_of_line = false;
         let mut groups = Vec::new();
+        let mut group_count = 0;
         while pattern_index < value.len() {
             let remainder = &value[pattern_index..];
             match Matcher::try_parse(remainder, matchers.last()) {
@@ -213,6 +220,7 @@ impl TryFrom<&str> for Expression {
                         start_index: matchers.len(),
                         alternative_index: None,
                     });
+                    group_count += 1;
                     pattern_index += offset;
                 }
                 Some((Matcher::Alteration, offset)) => {
@@ -243,12 +251,7 @@ impl TryFrom<&str> for Expression {
                     pattern_index += offset;
                 }
                 Some((matcher @ Matcher::Backreference(n), offset)) => {
-                    if matchers
-                        .iter()
-                        .filter(|m| matches!(m, Matcher::Group(_, _)))
-                        .count()
-                        < n
-                    {
+                    if group_count < n {
                         return Err("Invalid back reference".into());
                     }
                     matchers.push(matcher);
